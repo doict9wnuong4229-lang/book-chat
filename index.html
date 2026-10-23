@@ -138,20 +138,23 @@
   const proxify = u => {
     u = fixUsulUrl(u);
     if (typeof u === 'string' && u.startsWith('/proxy?url=')) return u;
+    // files.turath.io มี CORS (*) และรองรับ Range 206 อยู่แล้ว ไม่ต้องผ่าน proxy เพราะ proxy จะตัด Range header ทิ้ง
+    if (typeof u === 'string' && /files\.turath\.io/.test(u)) return u;
+
     const p = (localStorage.getItem('bc_proxy') || '').trim();
     if (p) {
       if (p === 'none' || p === 'direct') return u;
-      const isBookApi = /turath\.io|usul\.ai|goldenshamela\.com/.test(u);
+      const isBookApi = /api\.turath\.io|usul\.ai|goldenshamela\.com/.test(u);
       const isAiApi = !isBookApi || /relayrouter\.ai|itkk\.lol|gcli2api-lea8\.onrender\.com|generativelanguage|tavily\.com/.test(u);
       if (isAiApi && localStorage.getItem('bc_proxy_all') !== '1') return u;
       return p.includes('{url}') ? p.replace('{url}', encodeURIComponent(u)) : p + encodeURIComponent(u);
     }
     const isLocalServer = typeof location !== 'undefined' && (location.hostname === '127.0.0.1' || location.hostname === 'localhost');
-    if (isLocalServer && /turath\.io|usul\.ai|goldenshamela\.com/.test(u)) {
+    if (isLocalServer && /api\.turath\.io|usul\.ai|goldenshamela\.com/.test(u)) {
       return '/proxy?url=' + encodeURIComponent(u);
     }
     const isOnlineWeb = typeof location !== 'undefined' && location.protocol.startsWith('http') && !isLocalServer;
-    if (isOnlineWeb && /turath\.io|usul\.ai|goldenshamela\.com/.test(u)) {
+    if (isOnlineWeb && /api\.turath\.io|usul\.ai|goldenshamela\.com/.test(u)) {
       return DEFAULT_ONLINE_PROXY.replace('{url}', encodeURIComponent(u));
     }
     return u;
@@ -7448,13 +7451,19 @@ ${extraRules ? `\n${extraRules}\n` : ''}
         const r = await fetch(pu, { headers: { ...base, Range: `bytes=${a}-${b}` } });
         if (r.status === 429 && t < 4) { await sleep(1200 * 2 ** t + Math.random() * 400); continue; }
         if (r.status !== 206) {
+          if (r.status === 200 && PV_FULL_FALLBACK && a === 0) {
+            const buf = new Uint8Array(await r.arrayBuffer());
+            pv.bytes = buf.length;
+            logRaw(`· PDF โหลดเต็มไฟล์ (HTTP 200) → ${(buf.length / 1024).toFixed(0)}KB`);
+            return { r, buf, isFull: true };
+          }
           try { r.body?.cancel(); } catch {}
           throw Object.assign(new Error('ไม่รองรับ Range (HTTP ' + r.status + ')'), { noRange: true });
         }
         const buf = new Uint8Array(await r.arrayBuffer());
         pv.bytes = (pv.bytes || 0) + buf.length;
         logRaw(`· PDF Range ${a}-${b} → ${(buf.length / 1024).toFixed(0)}KB (รวม ${mb(pv.bytes)} MB)`);
-        return { r, buf };
+        return { r, buf, isFull: false };
       }
     };
     const get = (a, b) => new Promise((ok, no) => {
@@ -7465,6 +7474,7 @@ ${extraRules ? `\n${extraRules}\n` : ''}
   }
 
   async function pvLength(f, first) {
+    if (first.isFull) return first.buf.length;
     const m = (first.r.headers.get('content-range') || '').match(/\/(\d+)\s*$/);
     if (m) return +m[1];
     try {
@@ -7478,6 +7488,9 @@ ${extraRules ? `\n${extraRules}\n` : ''}
   async function pvOpenRange(L, url) {
     const f = pvFetcher(url);
     const first = await f.get(0, PV_CHUNK - 1);
+    if (first.isFull) {
+      return L.getDocument({ data: first.buf }).promise;
+    }
     const total = await pvLength(f, first);
     if (!total) throw Object.assign(new Error('ไม่รู้ขนาดไฟล์'), { noRange: true });
     if (first.buf.length >= total) return L.getDocument({ data: first.buf.subarray(0, total) }).promise;
