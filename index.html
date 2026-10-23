@@ -3292,10 +3292,36 @@ CONTENT TYPE
       (pl.root ? String(pl.root).split('/').map(enc).join('/') + '/' : '');
     const files = pl.files.map(f => {
       const [file, label = ''] = String(f).split('|');
-      const vol = label ? NaN : +(file.match(/(\d+)\D*\.pdf$/i) || [])[1];   // htmsm03.pdf → 3
-      return { file, label, vol, url: base + enc(file) };
+      let vol = NaN;
+      const cleanLbl = label ? label.trim() : '';
+      if (cleanLbl && /^\d+$/.test(cleanLbl)) {
+        vol = +cleanLbl;
+      } else {
+        const isCover = /غلاف|تقديم|مقدمة|فهرس|عنوان/.test(cleanLbl) || /[_\-]p\./i.test(file);
+        // รูปแบบ 1: 00_20893.pdf, 01_20893.pdf, 02_20894.pdf (เลขเล่มอยู่หน้า waqf id)
+        const m1 = file.match(/(?:^|\/)(\d{1,2})_\d+\.pdf$/i);
+        // รูปแบบ 2: 1/41557.pdf, 3/88651.pdf (โฟลเดอร์เลขเล่ม)
+        const m2 = file.match(/(?:^|\/)(\d{1,2})\/\d+\.pdf$/i);
+        // รูปแบบ 3: akhmkfkq_1.pdf, qrgb_01.pdf, mo9tafi-02.pdf (มี _ หรือ - คั่นด้วยเลขเล่ม 1-2 หลัก)
+        const m3 = file.match(/[-_](\d{1,2})\.pdf$/i);
+        // รูปแบบ 4: 01.pdf, 02.pdf (ชื่อไฟล์เป็นตัวเลขล้วน)
+        const m4 = file.match(/(?:^|\/)(\d{1,2})\.pdf$/i);
+        // รูปแบบ 5: malimt1.pdf, htmsm03.pdf (ตัวอักษรตามด้วยเลขเล่ม 1-2 หลัก)
+        const m5 = file.match(/[a-zA-Z](\d{1,2})\.pdf$/i);
+
+        const m = m1 || m2 || m3 || m4 || m5;
+        if (m) {
+          const v = +m[1];
+          vol = (v === 0 || isCover) ? 0 : v;
+        } else if (isCover) {
+          vol = 0;
+        }
+      }
+      return { file, label: cleanLbl, vol, url: base + enc(file) };
     });
-    return { files, main: files.filter(f => !f.label) };
+    // main: เฉพาะเล่มเนื้อหาหลัก (ตัดปก/คำนำ/สารบัญ หรือ vol === 0 ออก)
+    const main = files.filter(f => Number.isFinite(f.vol) ? f.vol > 0 : !/غلاف|تقديم|مقدمة|فهرس|عنوان/.test(f.label));
+    return { files, main: main.length ? main : files };
   }
 
   async function usulInfo(slug, versionId) {
@@ -4660,8 +4686,17 @@ ${badgeOf(sel || b)}</span></div>
       let info = infoCache.get(key);
       if (!info) { info = await turathInfo(b.id); infoCache.set(key, info); }
       const files = info.pdf?.files || [];
-      pp.body.innerHTML = files.length ? files.map(f =>
-        `<a class="pdfl" href="${esc(f.url)}" target="_blank" rel="noopener" download>⤓ ${esc(f.label || (Number.isFinite(f.vol) ? `ج${f.vol}` : f.file))}</a>`).join('') :
+      pp.body.innerHTML = files.length ? files.map(f => {
+        let title = f.label;
+        if (!title) {
+          if (Number.isFinite(f.vol)) {
+            title = f.vol === 0 ? 'المقدمة / الغلاف' : `ج${f.vol}`;
+          } else {
+            title = f.file;
+          }
+        }
+        return `<a class="pdfl" href="${esc(f.url)}" target="_blank" rel="noopener" download>⤓ ${esc(title)}</a>`;
+      }).join('') :
         '<div class="empty">เล่มนี้ไม่มีไฟล์ PDF</div>';
     } catch (e) {
       pp.body.innerHTML = `<div class="err">โหลดไม่สำเร็จ: ${esc(e.message)}</div>`;
@@ -7320,12 +7355,14 @@ ${extraRules ? `\n${extraRules}\n` : ''}
     const pdf = reader.info?.pdf || null;
     if (!pdf || !pdf.files.length) { a.hidden = true; reader.pdfFile = null; if (reader.info) reader.autoPdf = false; if (pv.open) closePdf(); return; }
     const list = pdf.main.length ? pdf.main : pdf.files;
-    const f = list.find(x => x.vol === reader.vol) ||
-      (list.length === 1 ? list[0] : list[(reader.vol || 1) - 1]) || list[0];
+    const curVol = reader.vol || 1;
+    const f = list.find(x => x.vol === curVol) ||
+      (list.length === 1 ? list[0] : (list[curVol - 1] || list[0]));
     reader.pdfFile = f;
     a.hidden = false;
     a.removeAttribute('href'); a.removeAttribute('target'); a.setAttribute('role', 'button');
-    a.textContent = list.length > 1 ? `PDF ج${f.vol || reader.vol || 1}` : 'PDF';
+    const displayVol = Number.isFinite(f.vol) && f.vol > 0 ? f.vol : curVol;
+    a.textContent = (list.length > 1 || displayVol > 1) ? `PDF ج${displayVol}` : 'PDF';
     a.classList.toggle('on', pv.open);
     if (pv.open) openPdf();
     else if (reader.autoPdf && reader.ppage) { reader.autoPdf = false; openPdf(); }
