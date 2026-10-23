@@ -131,12 +131,16 @@
   };
   window.__bcFixUsulUrl = fixUsulUrl;
 
-  // ---------- proxy (Cloudflare Worker / Corsfix / Local Server) ----------
+  // ---------- proxy (Cloudflare Worker / Corsfix / Local Server / Auto Online) ----------
+  const DEFAULT_ONLINE_PROXY = 'https://cors-get-proxy.sirjosh.workers.dev/?url={url}';
+  window.__bcDefaultProxy = DEFAULT_ONLINE_PROXY;
+
   const proxify = u => {
     u = fixUsulUrl(u);
     if (typeof u === 'string' && u.startsWith('/proxy?url=')) return u;
     const p = (localStorage.getItem('bc_proxy') || '').trim();
     if (p) {
+      if (p === 'none' || p === 'direct') return u;
       const isBookApi = /turath\.io|usul\.ai|goldenshamela\.com/.test(u);
       const isAiApi = !isBookApi || /relayrouter\.ai|itkk\.lol|gcli2api-lea8\.onrender\.com|generativelanguage|tavily\.com/.test(u);
       if (isAiApi && localStorage.getItem('bc_proxy_all') !== '1') return u;
@@ -145,6 +149,10 @@
     const isLocalServer = typeof location !== 'undefined' && (location.hostname === '127.0.0.1' || location.hostname === 'localhost');
     if (isLocalServer && /turath\.io|usul\.ai|goldenshamela\.com/.test(u)) {
       return '/proxy?url=' + encodeURIComponent(u);
+    }
+    const isOnlineWeb = typeof location !== 'undefined' && location.protocol.startsWith('http') && !isLocalServer;
+    if (isOnlineWeb && /turath\.io|usul\.ai|goldenshamela\.com/.test(u)) {
+      return DEFAULT_ONLINE_PROXY.replace('{url}', encodeURIComponent(u));
     }
     return u;
   };
@@ -10296,6 +10304,7 @@ ${extraRules ? `\n${extraRules}\n` : ''}
 
   // ---------- หน้าตั้งค่า ----------
   const CORSFIX = 'https://proxy.corsfix.com/?url={url}';
+  const DEFAULT_ONLINE_PROXY = window.__bcDefaultProxy || 'https://cors-get-proxy.sirjosh.workers.dev/?url={url}';
   const BUILTIN_PROVIDERS = {
     'api.relayrouter.ai': {
       label: 'api.relayrouter.ai (Gemini)',
@@ -10885,9 +10894,9 @@ ${escA(st.answerText || '(ไม่มีข้อความตอบกลั
       </select>
       <div class="hint" style="margin-top:2px;font-size:11.5px;color:var(--txt-3)">${t.qcHint || 'กำหนดจำนวนคำค้นที่ AI สร้างขึ้นเพื่อสืบค้นในคลัง (البحث بـ:) ยิ่งมากยิ่งกวาดเนื้อหาได้ละเอียดและครอบคลุม'}</div>
 
-      <label>CORS Proxy</label>
-      <input type="text" id="s-proxy" value="${escA(oldProxy)}" placeholder="https://your-worker.workers.dev/?url={url}">
-      <div class="mini"><button id="s-cfx">Corsfix</button><button id="s-clr">No Proxy / ไม่ใช้ proxy</button></div>
+      <label>CORS Proxy (สำหรับเว็บออนไลน์ / GitHub Pages)</label>
+      <input type="text" id="s-proxy" value="${escA(oldProxy)}" placeholder="Auto (แนะนำ): ${escA(DEFAULT_ONLINE_PROXY)}">
+      <div class="mini"><button type="button" id="s-def">⚡ Auto (แนะนำ)</button><button type="button" id="s-cfx">Corsfix</button><button type="button" id="s-clr">Direct (ไม่ใช้ proxy)</button></div>
 
       <label>Corsfix API Key</label>
       <input type="password" id="s-pkey" value="${escA(oldPKey)}" placeholder="cfx_...">
@@ -11065,8 +11074,9 @@ ${escA(st.answerText || '(ไม่มีข้อความตอบกลั
     if (focusCurrentKey) {
       setTimeout(() => kInput?.focus(), 60);
     }
+    q('#s-def').onclick = () => { q('#s-proxy').value = ''; };
     q('#s-cfx').onclick = () => { q('#s-proxy').value = CORSFIX; };
-    q('#s-clr').onclick = () => { q('#s-proxy').value = ''; };
+    q('#s-clr').onclick = () => { q('#s-proxy').value = 'direct'; };
     q('#s-cancel').onclick = closeSheet;
 
     q('#s-uilang').onchange = () => {
@@ -11091,7 +11101,16 @@ ${escA(st.answerText || '(ไม่มีข้อความตอบกลั
       out.className = ''; out.textContent = 'Testing…';
       const target = 'https://api.turath.io/search?q=' + encodeURIComponent('الصلاة') + '&ver=3';
       const p = q('#s-proxy').value.trim(), pk = q('#s-pkey').value.trim();
-      const url = !p ? target : (p.includes('{url}') ? p.replace('{url}', encodeURIComponent(target)) : p + encodeURIComponent(target));
+      let url;
+      if (!p) {
+        const isLocalServer = typeof location !== 'undefined' && (location.hostname === '127.0.0.1' || location.hostname === 'localhost');
+        if (isLocalServer) url = '/proxy?url=' + encodeURIComponent(target);
+        else url = DEFAULT_ONLINE_PROXY.replace('{url}', encodeURIComponent(target));
+      } else if (p === 'none' || p === 'direct') {
+        url = target;
+      } else {
+        url = p.includes('{url}') ? p.replace('{url}', encodeURIComponent(target)) : p + encodeURIComponent(target);
+      }
       const headers = { Accept: 'application/json' };
       if (p && pk) headers['x-corsfix-key'] = pk;
       try {
